@@ -1,5 +1,7 @@
 # ComfyUI Video Downloader (URL)
 
+**Version: 1.1.0** — see [CHANGELOG.md](CHANGELOG.md).
+
 A ComfyUI custom node that downloads a web video from a URL and outputs a
 `VIDEO` object — drop it in, paste a link, get a video.
 

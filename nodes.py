@@ -10,6 +10,7 @@ from comfy_api.latest import ComfyExtension, io, InputImpl
 from typing_extensions import override
 
 from .downloader import download_video
+from .version import __version__
 
 
 def _make_output_path(url: str) -> str:
@@ -29,12 +30,13 @@ class VideoDownloaderNode(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="VideoDownloaderByURL",
-            display_name="Video Downloader (URL)",
+            display_name="Video Downloader (URL) v%s" % __version__,
             category="video/download",
             description=(
                 "Download a video from a URL (TikTok, Bilibili, Instagram, "
                 "YouTube, and many more) and output a VIDEO. Uses yt-dlp with a "
-                "Bilibili anti-bot fallback, and auto-transcodes HEVC to H.264."
+                "Bilibili anti-bot fallback, and auto-transcodes HEVC to H.264. "
+                "[v%s]" % __version__
             ),
             inputs=[
                 io.String.Input(

@@ -12,6 +12,7 @@ import hashlib
 import folder_paths  # provided by ComfyUI runtime
 
 from .downloader import download_video
+from .version import __version__
 
 
 def _make_output_path(url: str) -> str:
@@ -83,7 +84,7 @@ class VideoDownloaderByURL:
     DESCRIPTION = (
         "Download a video from a URL (TikTok, Bilibili, Instagram, YouTube, ...) "
         "and output a VIDEO. Uses yt-dlp with a Bilibili anti-bot fallback, and "
-        "auto-transcodes HEVC to H.264."
+        "auto-transcodes HEVC to H.264.  [v%s]" % __version__
     )
 
     @classmethod
@@ -128,5 +129,5 @@ NODE_CLASS_MAPPINGS = {
     "VideoDownloaderByURL": VideoDownloaderByURL,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "VideoDownloaderByURL": "Video Downloader (URL)",
+    "VideoDownloaderByURL": "Video Downloader (URL) v%s" % __version__,
 }

@@ -4,6 +4,8 @@
 - Otherwise fall back to the V1 (legacy) node so older ComfyUI builds also work.
 """
 
+from .version import __version__
+
 # Try the modern V3 API first.
 _V3_OK = False
 try:
@@ -12,6 +14,9 @@ try:
     _V3_OK = True
 except Exception:
     _V3_OK = False
+
+print(f"[comfyui-video-downloader] v{__version__} loaded "
+      f"({'V3 API' if _V3_OK else 'V1 legacy fallback'})")
 
 # Always also expose V1 mappings. ComfyUI loads V1 nodes via these globals;
 # when V3 is active, defining them as empty/duplicate is harmless, but to avoid
