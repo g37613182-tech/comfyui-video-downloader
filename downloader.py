@@ -202,26 +202,117 @@ def _bili_download_stream(opener, url, dest):
 # --------------------------------------------------------------------------- #
 # yt-dlp primary path
 # --------------------------------------------------------------------------- #
+def _has_curl_cffi():
+    try:
+        import curl_cffi  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 def _download_ytdlp(url, workdir, log):
-    """Primary path via yt-dlp. Returns downloaded file path or raises."""
+    """Primary path via yt-dlp, with retries and impersonation when available.
+
+    Returns downloaded file path or raises RuntimeError.
+    """
     ytdlp = _which("yt-dlp")
     if not ytdlp:
         raise RuntimeError("yt-dlp is not installed (pip install yt-dlp).")
     out_tmpl = os.path.join(workdir, "dl_%(id)s.%(ext)s")
-    cmd = [
+
+    base = [
         ytdlp, "--no-check-certificates", "--no-playlist", "--no-warnings",
         "-f", "bv*+ba/b", "--merge-output-format", "mp4",
         "--user-agent", UA,
-        "-o", out_tmpl, url,
+        "--retries", "5", "--fragment-retries", "5",
+        "--retry-sleep", "3",
+        "--socket-timeout", "30",
+        "--add-header", "Accept-Language:en-US,en;q=0.9",
+        "-o", out_tmpl,
     ]
-    log("yt-dlp: downloading ...")
-    rc, out, err = _run(cmd, timeout=900)
-    files = [os.path.join(workdir, f) for f in os.listdir(workdir)
-             if f.startswith("dl_")]
-    if rc != 0 or not files:
-        raise RuntimeError(f"yt-dlp failed (rc={rc}): {err[-600:]}")
-    # Pick the largest produced file.
-    return max(files, key=os.path.getsize)
+
+    # Build a list of attempts (most capable first).
+    attempts = []
+    if _has_curl_cffi():
+        # Impersonate a real Chrome to survive TikTok/IG anti-bot handshakes.
+        attempts.append(base + ["--impersonate", "chrome", url])
+        attempts.append(base + ["--impersonate", "safari", url])
+    attempts.append(base + [url])  # plain attempt (works without curl_cffi for many sites)
+
+    last_err = ""
+    for i, cmd in enumerate(attempts, 1):
+        imp = "chrome/safari impersonate" if "--impersonate" in cmd else "plain"
+        log(f"yt-dlp: downloading (attempt {i}/{len(attempts)}, {imp}) ...")
+        rc, out, err = _run(cmd, timeout=900)
+        files = [os.path.join(workdir, f) for f in os.listdir(workdir)
+                 if f.startswith("dl_")]
+        if rc == 0 and files:
+            return max(files, key=os.path.getsize)
+        last_err = err[-600:]
+        log(f"yt-dlp attempt {i} failed (rc={rc}).")
+
+    hint = ""
+    if not _has_curl_cffi():
+        hint = ("\nHINT: install 'curl_cffi' to enable browser impersonation, "
+                "which fixes most TikTok/Instagram 'connection closed' / 412 errors:\n"
+                "  pip install curl_cffi")
+    raise RuntimeError(f"yt-dlp failed: {last_err}{hint}")
+
+
+# --------------------------------------------------------------------------- #
+# TikTok native fallback (web detail API -> no-watermark URL)
+# --------------------------------------------------------------------------- #
+def _extract_tiktok_id(url):
+    m = re.search(r"/video/(\d+)", url)
+    if m:
+        return m.group(1)
+    m = re.search(r"(\d{18,19})", url)
+    return m.group(1) if m else None
+
+
+def _download_tiktok(url, workdir, log):
+    """Fallback for TikTok: resolve play address via web detail API, then fetch."""
+    vid = _extract_tiktok_id(url)
+    if not vid:
+        raise RuntimeError("Could not extract TikTok video id from URL.")
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    cj = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(cj),
+        urllib.request.HTTPSHandler(context=ctx),
+    )
+    headers = {
+        "User-Agent": UA,
+        "Referer": "https://www.tiktok.com/",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    def _get(u):
+        req = urllib.request.Request(u, headers=headers)
+        return opener.open(req, timeout=30).read()
+
+    log("TikTok: querying web detail API ...")
+    api = ("https://www.tiktok.com/api/item/detail/?itemId=%s"
+           "&aid=1988&app_language=en&region=US&device_platform=web_pc" % vid)
+    data = json.loads(_get(api))
+    item = (data.get("itemInfo") or {}).get("itemStruct") or {}
+    video = item.get("video") or {}
+    play = (video.get("playAddr") or video.get("downloadAddr")
+            or (video.get("bitrateInfo") or [{}])[0].get("PlayAddr", {}).get("UrlList", [None])[0])
+    if not play:
+        raise RuntimeError("TikTok API did not return a playable URL.")
+
+    out = os.path.join(workdir, f"tiktok_{vid}.mp4")
+    log("TikTok: downloading video stream ...")
+    req = urllib.request.Request(play, headers=headers)
+    with opener.open(req, timeout=120) as resp, open(out, "wb") as f:
+        shutil.copyfileobj(resp, f, length=1 << 20)
+    if os.path.getsize(out) < 1024:
+        raise RuntimeError("TikTok stream download too small.")
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -244,6 +335,7 @@ def download_video(url, dest_path, transcode_h264=True, log=None):
     try:
         raw = None
         is_bili = "bilibili.com" in url or _extract_bvid(url) is not None
+        is_tiktok = "tiktok.com" in url
 
         # Try yt-dlp first (it handles most sites well).
         try:
@@ -253,6 +345,9 @@ def download_video(url, dest_path, transcode_h264=True, log=None):
             if is_bili:
                 log("Falling back to Bilibili native downloader ...")
                 raw = _download_bilibili(url, workdir, log)
+            elif is_tiktok:
+                log("Falling back to TikTok native downloader ...")
+                raw = _download_tiktok(url, workdir, log)
             else:
                 raise
 
