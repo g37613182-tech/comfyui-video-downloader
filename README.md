@@ -13,6 +13,17 @@ Works with **TikTok, Bilibili, Instagram, YouTube** and many more sites.
 - **Auto-transcodes HEVC / H.265 / AV1 → H.264** for broad compatibility (toggleable).
 - 0KB / corruption guard: the node fails loudly instead of producing an empty file.
 
+## Compatibility
+
+This node works on **both new and old ComfyUI**:
+
+- **New ComfyUI** (with the V3 API `comfy_api.latest`) → loads the V3 node and outputs a real `VIDEO`.
+- **Older ComfyUI** (no `comfy_api.latest`) → automatically falls back to a V1 (legacy)
+  node. It still outputs a `VIDEO` when the runtime exposes a `VideoFromFile`
+  implementation; if none is available, it outputs the saved file path as a `STRING`.
+
+No configuration is needed — the correct version is selected automatically at load time.
+
 ## Installation
 
 1. Copy this folder into your ComfyUI custom nodes directory:
