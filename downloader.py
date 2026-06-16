@@ -271,11 +271,93 @@ def _extract_tiktok_id(url):
 
 
 def _download_tiktok(url, workdir, log):
-    """Fallback for TikTok: resolve play address via web detail API, then fetch."""
+    """Fallback for TikTok: resolve play address via web detail API, then fetch.
+
+    Uses curl_cffi (real browser TLS fingerprint) when available, because TikTok
+    edge servers drop plain urllib/yt-dlp connections (RemoteDisconnected).
+    """
     vid = _extract_tiktok_id(url)
     if not vid:
         raise RuntimeError("Could not extract TikTok video id from URL.")
 
+    headers = {
+        "User-Agent": UA,
+        "Referer": "https://www.tiktok.com/",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "application/json, text/plain, */*",
+    }
+
+    apis = [
+        ("https://www.tiktok.com/api/item/detail/?itemId=%s"
+         "&aid=1988&app_language=en&region=US&device_platform=web_pc" % vid),
+        ("https://api16-normal-c-useast1a.tiktokv.com/aweme/v1/feed/"
+         "?aweme_id=%s&aid=1180&version_code=300904" % vid),
+    ]
+
+    # ---- Preferred path: curl_cffi with Chrome impersonation ----
+    try:
+        from curl_cffi import requests as creq  # type: ignore
+    except Exception:
+        creq = None
+
+    def _parse_play(data):
+        # web detail API shape
+        item = (data.get("itemInfo") or {}).get("itemStruct") or {}
+        video = item.get("video") or {}
+        play = (video.get("playAddr") or video.get("downloadAddr"))
+        if play:
+            return play
+        bi = video.get("bitrateInfo") or []
+        if bi:
+            ul = (bi[0].get("PlayAddr") or {}).get("UrlList") or []
+            if ul:
+                return ul[0]
+        # mobile aweme API shape
+        aw = (data.get("aweme_list") or [{}])[0]
+        v = aw.get("video") or {}
+        pa = (v.get("play_addr") or {}).get("url_list") or []
+        if pa:
+            return pa[0]
+        dl = (v.get("download_addr") or {}).get("url_list") or []
+        if dl:
+            return dl[0]
+        return None
+
+    last_err = None
+    if creq is not None:
+        for api in apis:
+            for attempt in range(2):
+                try:
+                    log(f"TikTok: querying detail API via curl_cffi (chrome) ...")
+                    r = creq.get(api, headers=headers, impersonate="chrome",
+                                 timeout=30, verify=False)
+                    if r.status_code != 200 or not r.content:
+                        last_err = f"HTTP {r.status_code}"
+                        continue
+                    play = _parse_play(r.json())
+                    if not play:
+                        last_err = "no playable URL in API response"
+                        continue
+                    out = os.path.join(workdir, f"tiktok_{vid}.mp4")
+                    log("TikTok: downloading video stream via curl_cffi ...")
+                    dl_headers = dict(headers)
+                    dl_headers["Referer"] = "https://www.tiktok.com/"
+                    with creq.Session(impersonate="chrome") as s:
+                        resp = s.get(play, headers=dl_headers, timeout=120,
+                                     stream=True, verify=False)
+                        with open(out, "wb") as f:
+                            for chunk in resp.iter_content(chunk_size=1 << 20):
+                                if chunk:
+                                    f.write(chunk)
+                    if os.path.getsize(out) >= 1024:
+                        return out
+                    last_err = "stream too small"
+                except Exception as e:
+                    last_err = str(e)
+                    log(f"TikTok curl_cffi attempt failed: {e}")
+        log(f"TikTok curl_cffi path exhausted: {last_err}")
+
+    # ---- Last resort: plain urllib (usually blocked, but try anyway) ----
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -284,35 +366,30 @@ def _download_tiktok(url, workdir, log):
         urllib.request.HTTPCookieProcessor(cj),
         urllib.request.HTTPSHandler(context=ctx),
     )
-    headers = {
-        "User-Agent": UA,
-        "Referer": "https://www.tiktok.com/",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
 
     def _get(u):
         req = urllib.request.Request(u, headers=headers)
         return opener.open(req, timeout=30).read()
 
-    log("TikTok: querying web detail API ...")
-    api = ("https://www.tiktok.com/api/item/detail/?itemId=%s"
-           "&aid=1988&app_language=en&region=US&device_platform=web_pc" % vid)
-    data = json.loads(_get(api))
-    item = (data.get("itemInfo") or {}).get("itemStruct") or {}
-    video = item.get("video") or {}
-    play = (video.get("playAddr") or video.get("downloadAddr")
-            or (video.get("bitrateInfo") or [{}])[0].get("PlayAddr", {}).get("UrlList", [None])[0])
-    if not play:
-        raise RuntimeError("TikTok API did not return a playable URL.")
-
-    out = os.path.join(workdir, f"tiktok_{vid}.mp4")
-    log("TikTok: downloading video stream ...")
-    req = urllib.request.Request(play, headers=headers)
-    with opener.open(req, timeout=120) as resp, open(out, "wb") as f:
-        shutil.copyfileobj(resp, f, length=1 << 20)
-    if os.path.getsize(out) < 1024:
-        raise RuntimeError("TikTok stream download too small.")
-    return out
+    try:
+        log("TikTok: retrying detail API via plain urllib ...")
+        data = json.loads(_get(apis[0]))
+        play = _parse_play(data)
+        if not play:
+            raise RuntimeError("TikTok API did not return a playable URL.")
+        out = os.path.join(workdir, f"tiktok_{vid}.mp4")
+        req = urllib.request.Request(play, headers=headers)
+        with opener.open(req, timeout=120) as resp, open(out, "wb") as f:
+            shutil.copyfileobj(resp, f, length=1 << 20)
+        if os.path.getsize(out) < 1024:
+            raise RuntimeError("TikTok stream download too small.")
+        return out
+    except Exception as e:
+        hint = ""
+        if creq is None:
+            hint = ("\nHINT: TikTok blocks plain connections. Install curl_cffi to "
+                    "enable browser TLS fingerprinting:\n  pip install curl_cffi")
+        raise RuntimeError(f"TikTok fallback failed: {e}{hint}")
 
 
 # --------------------------------------------------------------------------- #

@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.2.0
+- **TikTok native fallback now uses `curl_cffi`** (real Chrome TLS fingerprint).
+  Fixes `RemoteDisconnected: Remote end closed connection without response` when
+  TikTok edge servers drop plain urllib / yt-dlp connections.
+- Tries multiple TikTok endpoints (web detail API + mobile aweme API) with retries,
+  then falls back to plain urllib as a last resort.
+- Clearer hint to `pip install curl_cffi` when it is missing.
+
 ## v1.1.0
 - **Version is now shown in the node UI** (display name + description) and printed
   to the ComfyUI console on load, so you can confirm which version is installed.
