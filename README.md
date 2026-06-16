@@ -38,6 +38,10 @@ No configuration is needed — the correct version is selected automatically at 
    pip install -r requirements.txt
    ```
 
+   This installs `yt-dlp` and `curl_cffi`. **`curl_cffi` enables browser
+   impersonation**, which is required to bypass anti-bot challenges on TikTok /
+   Instagram (otherwise you may hit "Remote end closed connection" or HTTP 412).
+
    You also need **ffmpeg** available on PATH (required for muxing/transcoding).
 
 3. Restart ComfyUI.
